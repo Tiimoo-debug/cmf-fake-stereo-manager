@@ -34,6 +34,7 @@ fun App() {
     var busy by remember { mutableStateOf(true) }
     var console by remember { mutableStateOf("") }
     var gain by remember { mutableStateOf(0f) }
+    var gainReadable by remember { mutableStateOf(false) }
     var soloOn by remember { mutableStateOf(false) }
 
     fun refresh() {
@@ -41,7 +42,8 @@ fun App() {
             busy = true
             val s = withContext(Dispatchers.IO) { StereoCtl.status() }
             status = s
-            gain = s.gain.toFloat()
+            gainReadable = s.gain != null
+            gain = (s.gain ?: 0).toFloat()
             busy = false
         }
     }
@@ -53,7 +55,8 @@ fun App() {
             console = if (out.isBlank()) "$label: done" else out
             val s = withContext(Dispatchers.IO) { StereoCtl.status() }
             status = s
-            gain = s.gain.toFloat()
+            gainReadable = s.gain != null
+            gain = (s.gain ?: 0).toFloat()
             busy = false
         }
     }
@@ -116,7 +119,10 @@ fun App() {
 
                             HorizontalDivider()
 
-                            Text("Earpiece gain: ${gain.toInt()} / ${StereoCtl.MAX_GAIN}")
+                            Text(
+                                if (gainReadable) "Earpiece gain: ${gain.toInt()} / ${StereoCtl.MAX_GAIN}"
+                                else "Earpiece gain: unavailable"
+                            )
                             Slider(
                                 value = gain,
                                 onValueChange = { gain = it },
@@ -125,14 +131,26 @@ fun App() {
                                 },
                                 valueRange = 0f..StereoCtl.MAX_GAIN.toFloat(),
                                 steps = StereoCtl.MAX_GAIN - 1,
-                                enabled = !busy
+                                // Disabled when the value could not be read. Writing a
+                                // displayed-but-unread 0 back is how this zeroed a working
+                                // config once; the slider stays inert rather than guess.
+                                enabled = !busy && gainReadable
                             )
-                            Text(
-                                "31 is the hardware ceiling - the register field is 5 bits, so " +
-                                    "higher values wrap and get quieter. The earpiece has no " +
-                                    "protection circuit; back off at the first buzz.",
-                                style = MaterialTheme.typography.bodySmall
-                            )
+                            if (!gainReadable) {
+                                Text(
+                                    "Could not read the gain from actions.conf, so the slider is " +
+                                        "disabled rather than risk writing a wrong value over it.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.error
+                                )
+                            } else {
+                                Text(
+                                    "31 is the hardware ceiling - the register field is 5 bits, so " +
+                                        "higher values wrap and get quieter. The earpiece has no " +
+                                        "protection circuit; back off at the first buzz.",
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                            }
 
                             HorizontalDivider()
 
@@ -164,8 +182,15 @@ fun App() {
                                 ) { Text(if (soloOn) "Un-solo" else "Solo earpiece") }
                                 FilledTonalButton(
                                     onClick = { action("doctor") { StereoCtl.doctor() } },
-                                    enabled = !busy
+                                    enabled = !busy && status.supportsDoctor
                                 ) { Text("Doctor") }
+                            }
+                            if (!status.supportsDoctor) {
+                                Text(
+                                    "Doctor needs module v0.7.1 or newer - this device has " +
+                                        "${status.moduleVersion.ifBlank { "an older build" }}.",
+                                    style = MaterialTheme.typography.bodySmall
+                                )
                             }
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 OutlinedButton(
@@ -226,6 +251,10 @@ private fun StatusCard(s: StereoCtl.Status) {
             StatusRow("Daemon", if (s.daemonRunning) "running" else "stopped", s.daemonRunning)
             StatusRow("Playback", if (s.playing) "active" else "idle", true)
             StatusRow("Routing", "${s.actionCount} actions", s.actionCount > 0)
+            StatusRow("Gain", s.gain?.let { "$it / ${StereoCtl.MAX_GAIN}" } ?: "unreadable", s.gain != null)
+            if (s.moduleVersion.isNotBlank()) {
+                StatusRow("Version", s.moduleVersion, true)
+            }
         }
     }
 }

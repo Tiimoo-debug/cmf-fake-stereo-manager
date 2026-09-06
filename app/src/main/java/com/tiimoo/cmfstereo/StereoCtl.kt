@@ -24,8 +24,11 @@ object StereoCtl {
         val daemonRunning: Boolean = false,
         val playing: Boolean = false,
         val mode: String = "playback",
-        val gain: Int = 0,
+        /** null means "could not be read" - which is NOT the same as zero. */
+        val gain: Int? = null,
         val actionCount: Int = 0,
+        val moduleVersion: String = "",
+        val supportsDoctor: Boolean = false,
         val raw: String = ""
     )
 
@@ -47,6 +50,8 @@ object StereoCtl {
             mode = Regex("""mode:\s+(\w+)""").find(raw)?.groupValues?.get(1) ?: "playback",
             gain = readGain(),
             actionCount = Regex("""\((\d+) configured\)""").find(raw)?.groupValues?.get(1)?.toIntOrNull() ?: 0,
+            moduleVersion = readModuleVersion(),
+            supportsDoctor = supportsCommand("doctor"),
             raw = raw
         )
     }
@@ -63,9 +68,27 @@ object StereoCtl {
 
     fun report() = ctl("report").out
 
-    fun readGain(): Int =
-        Shell.run("grep -m1 '^ctl|Handset Volume|' $ACTIONS 2>/dev/null | cut -d'|' -f3")
-            .out.trim().toIntOrNull() ?: 0
+    /**
+     * Returns null when the value cannot be read, so the UI can say so
+     * instead of showing 0 - a displayed 0 that then gets written back is how
+     * this silently zeroed a working config.
+     *
+     * No `grep -m1`: Android's grep is toybox and does not take the value
+     * jammed onto the flag. `head -n 1` is portable and cannot fail quietly.
+     */
+    fun readGain(): Int? {
+        val r = Shell.run("grep '^ctl|Handset Volume|' $ACTIONS 2>/dev/null | head -n 1 | cut -d'|' -f3")
+        if (!r.ok) return null
+        return r.out.trim().toIntOrNull()
+    }
+
+    fun readModuleVersion(): String =
+        Shell.run("grep '^version=' $MODULE_DIR/module.prop 2>/dev/null | cut -d= -f2")
+            .out.trim()
+
+    /** Older modules lack the newer subcommands; asking is cheaper than guessing. */
+    fun supportsCommand(name: String): Boolean =
+        Shell.run("sh $CTL --help 2>&1 | grep -c '^  $name'").out.trim().toIntOrNull()?.let { it > 0 } ?: false
 
     /**
      * Rewrite the gain in actions.conf. Clamped to the hardware ceiling: the
