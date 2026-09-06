@@ -255,6 +255,7 @@ private fun StatusCard(s: StereoCtl.Status) {
             StatusRow("Daemon", if (s.daemonRunning) "running" else "stopped", s.daemonRunning)
             StatusRow("Playback", if (s.playing) "active" else "idle", true)
             StatusRow("Routing", "${s.actionCount} actions", s.actionCount > 0)
+            StatusRow("App", BuildConfig.VERSION_NAME, true)
             StatusRow("Gain", s.gain?.let { "$it / ${StereoCtl.MAX_GAIN}" } ?: "unreadable", s.gain != null)
             if (s.moduleVersion.isNotBlank()) {
                 StatusRow("Version", s.moduleVersion, true)

@@ -11,6 +11,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history: the version code is derived from the commit count.
+          fetch-depth: 0
 
       - uses: actions/setup-java@v4
         with:
@@ -27,8 +30,10 @@ jobs:
       - name: Rename
         run: |
           mkdir -p out
+          VER=$(grep -m1 versionName app/build/outputs/apk/release/output-metadata.json \
+                | cut -d'"' -f4 || echo unknown)
           cp app/build/outputs/apk/release/app-release.apk \
-             "out/cmf-stereo-manager-$(git rev-parse --short HEAD).apk"
+             "out/cmf-stereo-manager-v${VER}-$(git rev-parse --short HEAD).apk"
           ls -l out
 
       - uses: actions/upload-artifact@v4

@@ -1,3 +1,21 @@
+/**
+ * Version derived from the commit count, so every build is distinguishable
+ * without anyone remembering to bump a number - the first three builds all
+ * shipped as versionCode 1 precisely because that relied on memory.
+ *
+ * Needs full history: CI must check out with fetch-depth: 0, or this falls
+ * back to 1.
+ */
+fun gitCommitCount(): Int = try {
+    val proc = ProcessBuilder("git", "rev-list", "--count", "HEAD")
+        .directory(rootDir)
+        .redirectErrorStream(true)
+        .start()
+    proc.inputStream.bufferedReader().readText().trim().toIntOrNull() ?: 1
+} catch (e: Exception) {
+    1
+}
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -12,8 +30,8 @@ android {
         applicationId = "com.tiimoo.cmfstereo"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = gitCommitCount()
+        versionName = "1.0.${gitCommitCount()}"
     }
 
     buildTypes {
@@ -31,7 +49,10 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = "17" }
-    buildFeatures { compose = true }
+    buildFeatures {
+        compose = true
+        buildConfig = true
+    }
 }
 
 dependencies {
