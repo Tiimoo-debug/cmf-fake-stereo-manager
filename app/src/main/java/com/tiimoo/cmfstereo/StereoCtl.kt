@@ -94,18 +94,32 @@ object StereoCtl {
      * Rewrite the gain in actions.conf. Clamped to the hardware ceiling: the
      * register field is 5 bits, so 40 wraps to 8 and gets quieter, not louder.
      */
+    /**
+     * Writes the gain to actions.conf, then asks the daemon to apply it now.
+     *
+     * Without the apply, the new value only reaches the mixer on the daemon's
+     * next cycle - and in MODE=playback that is never, unless audio happens to
+     * be running. The slider then looks broken: the file changes, the loudness
+     * does not.
+     */
     fun setGain(value: Int): String {
         val v = value.coerceIn(0, MAX_GAIN)
         // '#' as the sed delimiter: the pattern itself contains '|'.
-        return Shell.run(
-            "sed -i 's#^ctl|Handset Volume|.*#ctl|Handset Volume|$v#' $ACTIONS"
-        ).out
+        val w = Shell.run("sed -i 's#^ctl|Handset Volume|.*#ctl|Handset Volume|$v#' $ACTIONS")
+        if (!w.ok) return w.out
+        // Push it straight at the mixer too, so the change is audible now
+        // rather than at some later route change.
+        val live = Shell.run("sh $CTL ctl 'Handset Volume' $v")
+        return "gain -> $v\n${live.out}"
     }
 
     fun setMode(mode: String): String {
         val m = if (mode == "always") "always" else "playback"
         return Shell.run("sed -i 's/^MODE=.*/MODE=$m/' $CONF").out
     }
+
+    /** Live mixer value, as opposed to what actions.conf says it should be. */
+    fun liveGain(): String = Shell.run("sh $CTL ctl 'Handset Volume'").out
 
     fun readConf(): String = Shell.run("cat $CONF 2>/dev/null").out
 

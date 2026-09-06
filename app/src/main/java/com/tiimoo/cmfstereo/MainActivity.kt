@@ -194,6 +194,10 @@ fun App() {
                             }
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 OutlinedButton(
+                                    onClick = { action("live gain") { StereoCtl.liveGain() } },
+                                    enabled = !busy
+                                ) { Text("Live gain") }
+                                OutlinedButton(
                                     onClick = { action("log") { StereoCtl.log() } },
                                     enabled = !busy
                                 ) { Text("Log") }
