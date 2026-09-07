@@ -124,7 +124,7 @@ fun App() {
                 !status.installed -> Padded { Problem("Module not installed", "Flash cmf-fake-stereo and reboot.") }
                 else -> {
                     TabRow(selectedTabIndex = tab) {
-                        listOf("Speaker", "Settings", "Developer").forEachIndexed { i, t ->
+                        listOf("Speaker", "Settings", "Developer", "Guide").forEachIndexed { i, t ->
                             Tab(selected = tab == i, onClick = { tab = i }, text = { Text(t) })
                         }
                     }
@@ -143,6 +143,7 @@ fun App() {
                             1 -> AdvancedTab(status, busy, ::action)
                             2 -> ToolsTab(status, busy, ::action, sweeping, sweepAt,
                                 onSweep = ::sweep, onStopSweep = { sweeping = false })
+                            3 -> GuideTab()
                         }
 
                         if (console.isNotBlank()) {
@@ -523,6 +524,64 @@ private fun ToolsTab(
                 OutlinedButton(onClick = { action("log") { StereoCtl.log() } }, enabled = !busy) { Text("Log") }
             }
         }
+    }
+}
+
+@Composable
+private fun GuideTab() {
+    var query by remember { mutableStateOf("") }
+    var open by remember { mutableStateOf<String?>(null) }
+
+    OutlinedTextField(
+        value = query,
+        onValueChange = { query = it },
+        label = { Text("Search the guide") },
+        singleLine = true,
+        modifier = Modifier.fillMaxWidth()
+    )
+
+    val q = query.trim().lowercase()
+    Help.sections.forEach { (section, entries) ->
+        val matching = entries.filter {
+            q.isBlank() || it.title.lowercase().contains(q) ||
+                it.body.lowercase().contains(q) || it.tag.contains(q)
+        }
+        if (matching.isNotEmpty()) {
+            Text(section, style = MaterialTheme.typography.titleMedium)
+            matching.forEach { e ->
+                Card(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(14.dp)) {
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(e.title, style = MaterialTheme.typography.titleSmall)
+                            TextButton(onClick = { open = if (open == e.title) null else e.title }) {
+                                Text(if (open == e.title) "Hide" else "Show")
+                            }
+                        }
+                        // Searching implies you want the answer, not another tap.
+                        if (open == e.title || q.isNotBlank()) {
+                            Text(
+                                e.body,
+                                style = MaterialTheme.typography.bodySmall,
+                                modifier = Modifier.padding(top = 4.dp)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (q.isNotBlank() && Help.sections.none { (_, es) ->
+            es.any {
+                it.title.lowercase().contains(q) || it.body.lowercase().contains(q) ||
+                    it.tag.contains(q)
+            }
+        }) {
+        Text("Nothing matches \"$query\".", style = MaterialTheme.typography.bodyMedium)
     }
 }
 
