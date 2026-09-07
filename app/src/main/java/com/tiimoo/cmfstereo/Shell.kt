@@ -2,6 +2,7 @@ package com.tiimoo.cmfstereo
 
 import java.io.BufferedReader
 import java.io.InputStreamReader
+import java.util.concurrent.TimeUnit
 
 /**
  * Minimal root shell. The module is driven entirely by `stereoctl` and two
@@ -12,12 +13,27 @@ object Shell {
 
     data class Result(val ok: Boolean, val out: String)
 
-    fun run(command: String): Result = try {
+    /**
+     * Runs a command as root, with a hard ceiling on how long it may take.
+     *
+     * The timeout is not belt-and-braces: a script that reads /proc/kmsg, or
+     * any other stream, never returns, and without this the UI sits greyed out
+     * forever with no way to tell a hang from a slow command.
+     */
+    fun run(command: String, timeoutSeconds: Long = 180): Result = try {
         val p = ProcessBuilder("su", "-c", command)
             .redirectErrorStream(true)
             .start()
         val text = BufferedReader(InputStreamReader(p.inputStream)).use { it.readText() }
-        Result(p.waitFor() == 0, text.trimEnd())
+        if (p.waitFor(timeoutSeconds, TimeUnit.SECONDS)) {
+            Result(p.exitValue() == 0, text.trimEnd())
+        } else {
+            p.destroyForcibly()
+            Result(
+                false,
+                (text.trimEnd() + "\n\n[timed out after ${timeoutSeconds}s and was killed]").trim()
+            )
+        }
     } catch (e: Exception) {
         Result(false, e.message ?: "failed to start su")
     }
