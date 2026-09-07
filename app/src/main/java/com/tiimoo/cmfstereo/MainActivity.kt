@@ -37,6 +37,31 @@ fun App() {
     var gainReadable by remember { mutableStateOf(false) }
     var extendedRange by remember { mutableStateOf(false) }
     var tab by remember { mutableStateOf(0) }
+    var sweeping by remember { mutableStateOf(false) }
+    var sweepAt by remember { mutableStateOf(-1) }
+
+    // Steps the gain across its whole range, holding each value long enough to
+    // judge by ear. The mapping is not monotonic on this hardware, so the only
+    // way to find the loudest setting is to listen to every one of them.
+    fun sweep(from: Int, to: Int, dwellMs: Long) {
+        scope.launch {
+            sweeping = true
+            val heard = StringBuilder("gain sweep $from..$to, ${dwellMs / 1000}s each\n")
+            for (v in from..to) {
+                if (!sweeping) break
+                sweepAt = v
+                withContext(Dispatchers.IO) { StereoCtl.ctlSet("Handset Volume", v.toString()) }
+                heard.append("  $v\n")
+                kotlinx.coroutines.delay(dwellMs)
+            }
+            sweepAt = -1
+            sweeping = false
+            console = heard.toString() +
+                "\nSweep done. Set the value you liked on the Speaker tab - " +
+                "the sweep only wrote the mixer, not the config."
+            sync(withContext(Dispatchers.IO) { StereoCtl.status() })
+        }
+    }
 
     fun sync(s: StereoCtl.Status) {
         status = s
@@ -99,7 +124,7 @@ fun App() {
                 !status.installed -> Padded { Problem("Module not installed", "Flash cmf-fake-stereo and reboot.") }
                 else -> {
                     TabRow(selectedTabIndex = tab) {
-                        listOf("Control", "Advanced", "Tools").forEachIndexed { i, t ->
+                        listOf("Speaker", "Settings", "Developer").forEachIndexed { i, t ->
                             Tab(selected = tab == i, onClick = { tab = i }, text = { Text(t) })
                         }
                     }
@@ -116,7 +141,8 @@ fun App() {
                                 onExtended = { extendedRange = it },
                                 action = ::action)
                             1 -> AdvancedTab(status, busy, ::action)
-                            2 -> ToolsTab(status, busy, ::action)
+                            2 -> ToolsTab(status, busy, ::action, sweeping, sweepAt,
+                                onSweep = ::sweep, onStopSweep = { sweeping = false })
                         }
 
                         if (console.isNotBlank()) {
@@ -190,7 +216,9 @@ private fun ControlTab(
             Slider(
                 value = gain.coerceAtMost(max.toFloat()),
                 onValueChange = onGain,
-                onValueChangeFinished = { action("gain") { StereoCtl.setGain(gain.toInt()) } },
+                onValueChangeFinished = {
+                    action("gain") { StereoCtl.setGain(gain.toInt(), extended) }
+                },
                 valueRange = 0f..max.toFloat(),
                 steps = max - 1,
                 enabled = !busy && gainReadable
@@ -224,6 +252,23 @@ private fun ControlTab(
                     ) { Text(l) }
                 }
             }
+            HorizontalDivider()
+
+            Text("Everyday", style = MaterialTheme.typography.titleSmall)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilledTonalButton(onClick = { action("solo") { StereoCtl.solo(true) } }, enabled = !busy) { Text("Solo") }
+                FilledTonalButton(onClick = { action("unsolo") { StereoCtl.solo(false) } }, enabled = !busy) { Text("Un-solo") }
+                FilledTonalButton(
+                    onClick = { action("doctor") { StereoCtl.doctor() } },
+                    enabled = !busy && s.supportsDoctor
+                ) { Text("Doctor") }
+            }
+            Text(
+                "Solo silences the speaker so you can hear the earpiece alone. " +
+                    "Doctor explains why it is silent, if it ever is.",
+                style = MaterialTheme.typography.bodySmall
+            )
+
             if (s.mode == "playback" && !s.playing) {
                 Text(
                     "Nothing is applied in this mode until audio is playing. If the " +
@@ -326,40 +371,72 @@ private fun AdvancedTab(s: StereoCtl.Status, busy: Boolean, action: (String, () 
 }
 
 @Composable
-private fun ToolsTab(s: StereoCtl.Status, busy: Boolean, action: (String, () -> String) -> Unit) {
+private fun ToolsTab(
+    s: StereoCtl.Status,
+    busy: Boolean,
+    action: (String, () -> String) -> Unit,
+    sweeping: Boolean,
+    sweepAt: Int,
+    onSweep: (Int, Int, Long) -> Unit,
+    onStopSweep: () -> Unit
+) {
     var ctlName by remember { mutableStateOf("Handset Volume") }
     var ctlValue by remember { mutableStateOf("") }
     var scanPattern by remember { mutableStateOf("rcv|handset|spk") }
     var rawArgs by remember { mutableStateOf("") }
     var diffSeconds by remember { mutableStateOf("20") }
+    var sweepFrom by remember { mutableStateOf("0") }
+    var sweepTo by remember { mutableStateOf("31") }
+    var dwell by remember { mutableStateOf("4") }
+
+    Text(
+        "Developer tools. Nothing here is needed for normal use - the Speaker " +
+            "tab covers that. These exist for mapping unknown hardware and for " +
+            "diagnosing the module itself.",
+        style = MaterialTheme.typography.bodySmall
+    )
 
     Card {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("Diagnostics", style = MaterialTheme.typography.titleMedium)
+            Text("Gain sweep", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "Steps the earpiece gain across a range, holding each value so you " +
+                    "can judge it by ear. The mapping is not monotonic on this " +
+                    "hardware, so listening is the only way to find the loudest " +
+                    "setting. Play music and use Solo first.",
+                style = MaterialTheme.typography.bodySmall
+            )
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                FilledTonalButton(onClick = { action("solo") { StereoCtl.solo(true) } }, enabled = !busy) { Text("Solo") }
-                FilledTonalButton(onClick = { action("unsolo") { StereoCtl.solo(false) } }, enabled = !busy) { Text("Un-solo") }
-                FilledTonalButton(
-                    onClick = { action("doctor") { StereoCtl.doctor() } },
-                    enabled = !busy && s.supportsDoctor
-                ) { Text("Doctor") }
+                OutlinedTextField(sweepFrom, { sweepFrom = it.filter { c -> c.isDigit() } },
+                    label = { Text("From") }, singleLine = true,
+                    modifier = Modifier.width(90.dp), enabled = !busy && !sweeping)
+                OutlinedTextField(sweepTo, { sweepTo = it.filter { c -> c.isDigit() } },
+                    label = { Text("To") }, singleLine = true,
+                    modifier = Modifier.width(90.dp), enabled = !busy && !sweeping)
+                OutlinedTextField(dwell, { dwell = it.filter { c -> c.isDigit() } },
+                    label = { Text("Sec") }, singleLine = true,
+                    modifier = Modifier.width(90.dp), enabled = !busy && !sweeping)
             }
-            if (!s.supportsDoctor) {
-                Text("Doctor needs module v0.7.1+.", style = MaterialTheme.typography.bodySmall)
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = { action("log") { StereoCtl.log() } }, enabled = !busy) { Text("Log") }
-                OutlinedButton(onClick = { action("live gain") { StereoCtl.liveGain() } }, enabled = !busy) { Text("Live gain") }
-                OutlinedButton(onClick = { action("help") { StereoCtl.help() } }, enabled = !busy) { Text("Help") }
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = { action("probe") { StereoCtl.probe() } }, enabled = !busy) { Text("Probe (slow)") }
-                OutlinedButton(onClick = { action("report") { StereoCtl.report() } }, enabled = !busy) { Text("Report") }
-                OutlinedButton(
-                    onClick = { action("playback probe") { StereoCtl.playbackProbe() } },
+            if (sweeping) {
+                Text("Now playing gain: $sweepAt", style = MaterialTheme.typography.titleLarge)
+                Button(onClick = onStopSweep) { Text("Stop") }
+            } else {
+                Button(
+                    onClick = {
+                        onSweep(
+                            sweepFrom.toIntOrNull() ?: 0,
+                            (sweepTo.toIntOrNull() ?: 31).coerceAtMost(StereoCtl.MAX_GAIN_EXTENDED),
+                            ((dwell.toLongOrNull() ?: 4L) * 1000)
+                        )
+                    },
                     enabled = !busy
-                ) { Text("Playback probe") }
+                ) { Text("Start sweep") }
             }
+            Text(
+                "The sweep writes the mixer only, not the config - set whatever you " +
+                    "settle on from the Speaker tab so it survives a reboot.",
+                style = MaterialTheme.typography.bodySmall
+            )
         }
     }
 
@@ -381,6 +458,7 @@ private fun ToolsTab(s: StereoCtl.Status, busy: Boolean, action: (String, () -> 
                     enabled = !busy && ctlName.isNotBlank()
                 ) { Text(if (ctlValue.isBlank()) "Read" else "Write") }
                 OutlinedButton(onClick = { action("dump") { StereoCtl.dump() } }, enabled = !busy) { Text("Dump all") }
+                OutlinedButton(onClick = { action("live gain") { StereoCtl.liveGain() } }, enabled = !busy) { Text("Live gain") }
             }
 
             HorizontalDivider()
@@ -406,16 +484,33 @@ private fun ToolsTab(s: StereoCtl.Status, busy: Boolean, action: (String, () -> 
 
     Card {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Hardware dump", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "Only needed on hardware this module has not been mapped on. The " +
+                    "CMF Phone 1 routing is already known and shipped.",
+                style = MaterialTheme.typography.bodySmall
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = { action("probe") { StereoCtl.probe() } }, enabled = !busy) { Text("Probe (slow)") }
+                OutlinedButton(onClick = { action("report") { StereoCtl.report() } }, enabled = !busy) { Text("Report") }
+                OutlinedButton(
+                    onClick = { action("playback probe") { StereoCtl.playbackProbe() } },
+                    enabled = !busy
+                ) { Text("Playback probe") }
+            }
+        }
+    }
+
+    Card {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("Run any stereoctl command", style = MaterialTheme.typography.titleMedium)
             OutlinedTextField(rawArgs, { rawArgs = it }, label = { Text("arguments") },
                 singleLine = true, modifier = Modifier.fillMaxWidth(), enabled = !busy)
-            Button(onClick = { action("stereoctl $rawArgs") { StereoCtl.raw(rawArgs) } },
-                enabled = !busy && rawArgs.isNotBlank()) { Text("Run") }
-            Text(
-                "Anything the buttons above do not cover. The module stays the source " +
-                    "of truth, so nothing here is unavailable in the app.",
-                style = MaterialTheme.typography.bodySmall
-            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = { action("stereoctl $rawArgs") { StereoCtl.raw(rawArgs) } },
+                    enabled = !busy && rawArgs.isNotBlank()) { Text("Run") }
+                OutlinedButton(onClick = { action("help") { StereoCtl.help() } }, enabled = !busy) { Text("Help") }
+            }
         }
     }
 
@@ -425,6 +520,7 @@ private fun ToolsTab(s: StereoCtl.Status, busy: Boolean, action: (String, () -> 
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(onClick = { action("stereo.conf") { StereoCtl.readConf() } }, enabled = !busy) { Text("stereo.conf") }
                 OutlinedButton(onClick = { action("actions.conf") { StereoCtl.readActions() } }, enabled = !busy) { Text("actions.conf") }
+                OutlinedButton(onClick = { action("log") { StereoCtl.log() } }, enabled = !busy) { Text("Log") }
             }
         }
     }

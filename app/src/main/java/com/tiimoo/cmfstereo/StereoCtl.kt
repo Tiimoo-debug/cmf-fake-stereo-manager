@@ -120,8 +120,13 @@ object StereoCtl {
      * be running. The slider then looks broken: the file changes, the loudness
      * does not.
      */
-    fun setGain(value: Int): String {
-        val v = value.coerceIn(0, MAX_GAIN)
+    /**
+     * @param allowExtended permit 19..31. Clamping to MAX_GAIN unconditionally
+     *   made the extended slider a lie: it moved to 31 and wrote 18.
+     */
+    fun setGain(value: Int, allowExtended: Boolean = true): String {
+        val ceiling = if (allowExtended) MAX_GAIN_EXTENDED else MAX_GAIN
+        val v = value.coerceIn(0, ceiling)
         // '#' as the sed delimiter: the pattern itself contains '|'.
         val w = Shell.run("sed -i 's#^ctl|Handset Volume|.*#ctl|Handset Volume|$v#' $ACTIONS")
         if (!w.ok) return w.out
