@@ -128,12 +128,20 @@ object StereoCtl {
         val ceiling = if (allowExtended) MAX_GAIN_EXTENDED else MAX_GAIN
         val v = value.coerceIn(0, ceiling)
         // '#' as the sed delimiter: the pattern itself contains '|'.
-        val w = Shell.run("sed -i 's#^ctl|Handset Volume|.*#ctl|Handset Volume|$v#' $ACTIONS")
-        if (!w.ok) return w.out
+        Shell.run("sed -i 's#^ctl|Handset Volume|.*#ctl|Handset Volume|$v#' $ACTIONS")
+
+        // Read it back instead of trusting the exit status. A write that
+        // reports success and does nothing is how the slider looked functional
+        // while changing nothing at all.
+        val after = readGain()
+        if (after != v) {
+            return "FAILED to write gain: actions.conf still reads ${after ?: "unreadable"}"
+        }
+
         // Push it straight at the mixer too, so the change is audible now
         // rather than at some later route change.
         val live = Shell.run("sh $CTL ctl 'Handset Volume' $v")
-        return "gain -> $v\n${live.out}"
+        return "gain -> $v (config verified)\n${live.out}"
     }
 
     fun setMode(mode: String): String {

@@ -5,26 +5,36 @@ import java.io.InputStreamReader
 import java.util.concurrent.TimeUnit
 
 /**
- * Minimal root shell. The module is driven entirely by `stereoctl` and two
- * text files, so a one-shot `su -c` per command is enough - no persistent
- * shell library, and one less dependency that CI can fail on.
+ * Minimal root shell.
+ *
+ * Commands are written to su's stdin rather than passed as `su -c <string>`.
+ * That matters: with -c the string goes through argv and is re-joined and
+ * re-parsed before a shell sees it, which quietly mangles anything with
+ * quoting in it. A sed like
+ *
+ *     sed -i 's#^ctl|Handset Volume|.*#ctl|Handset Volume|5#' file
+ *
+ * worked when typed into a terminal and silently failed from the app, so the
+ * gain slider appeared to write and never did. Feeding stdin means the root
+ * shell parses exactly the text we wrote, the same as typing it.
  */
 object Shell {
 
     data class Result(val ok: Boolean, val out: String)
 
-    /**
-     * Runs a command as root, with a hard ceiling on how long it may take.
-     *
-     * The timeout is not belt-and-braces: a script that reads /proc/kmsg, or
-     * any other stream, never returns, and without this the UI sits greyed out
-     * forever with no way to tell a hang from a slow command.
-     */
     fun run(command: String, timeoutSeconds: Long = 180): Result = try {
-        val p = ProcessBuilder("su", "-c", command)
+        val p = ProcessBuilder("su")
             .redirectErrorStream(true)
             .start()
+
+        p.outputStream.bufferedWriter().use { w ->
+            w.write(command)
+            w.write("\nexit\n")
+            w.flush()
+        }
+
         val text = BufferedReader(InputStreamReader(p.inputStream)).use { it.readText() }
+
         if (p.waitFor(timeoutSeconds, TimeUnit.SECONDS)) {
             Result(p.exitValue() == 0, text.trimEnd())
         } else {
@@ -38,5 +48,5 @@ object Shell {
         Result(false, e.message ?: "failed to start su")
     }
 
-    fun hasRoot(): Boolean = run("id -u").let { it.ok && it.out.trim() == "0" }
+    fun hasRoot(): Boolean = run("id -u").let { it.ok && it.out.trim().endsWith("0") }
 }
