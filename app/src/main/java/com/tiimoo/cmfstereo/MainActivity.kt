@@ -31,6 +31,7 @@ fun App() {
     val scope = rememberCoroutineScope()
     var status by remember { mutableStateOf(StereoCtl.Status()) }
     var busy by remember { mutableStateOf(true) }
+    var runningLabel by remember { mutableStateOf("") }
     var console by remember { mutableStateOf("") }
     var gain by remember { mutableStateOf(0f) }
     var gainReadable by remember { mutableStateOf(false) }
@@ -53,7 +54,9 @@ fun App() {
     fun action(label: String, block: () -> String) {
         scope.launch {
             busy = true
+            runningLabel = label
             val out = withContext(Dispatchers.IO) { block() }
+            runningLabel = ""
             console = if (out.isBlank()) "$label: done" else out
             sync(withContext(Dispatchers.IO) { StereoCtl.status() })
             busy = false
@@ -71,7 +74,25 @@ fun App() {
         }
     ) { pad ->
         Column(Modifier.padding(pad)) {
-            if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
+            if (busy) {
+                LinearProgressIndicator(Modifier.fillMaxWidth())
+                if (runningLabel.isNotBlank()) {
+                    // Some commands take a minute or more. A bare spinner with
+                    // every control greyed out is indistinguishable from a hang.
+                    Text(
+                        "Running: $runningLabel" + when (runningLabel) {
+                            "probe" -> "  -  dumping every mixer control, /sys, dmesg and " +
+                                "the param XMLs. This takes a minute or two."
+                            "report" -> "  -  folding the newest probe into one file."
+                            "diff" -> "  -  snapshotting, waiting, then comparing. " +
+                                "Start or stop playback now."
+                            else -> ""
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                    )
+                }
+            }
 
             when {
                 !status.rooted -> Padded { Problem("No root access", "Grant superuser permission, then Refresh.") }
@@ -332,7 +353,7 @@ private fun ToolsTab(s: StereoCtl.Status, busy: Boolean, action: (String, () -> 
                 OutlinedButton(onClick = { action("help") { StereoCtl.help() } }, enabled = !busy) { Text("Help") }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = { action("probe") { StereoCtl.probe() } }, enabled = !busy) { Text("Probe") }
+                OutlinedButton(onClick = { action("probe") { StereoCtl.probe() } }, enabled = !busy) { Text("Probe (slow)") }
                 OutlinedButton(onClick = { action("report") { StereoCtl.report() } }, enabled = !busy) { Text("Report") }
                 OutlinedButton(
                     onClick = { action("playback probe") { StereoCtl.playbackProbe() } },
