@@ -14,8 +14,18 @@ object StereoCtl {
     private const val ACTIONS = "$DATA_DIR/actions.conf"
     private const val CONF = "$DATA_DIR/stereo.conf"
 
-    /** Highest value the receiver's 5-bit gain field accepts. Above this it wraps. */
-    const val MAX_GAIN = 31
+    /**
+     * The driver declares "range 0->18" for Handset Volume. That is the range
+     * where the mapping is defined and monotonic.
+     *
+     * 19..31 still write - the field is 5 bits and the vendor HAL itself parks
+     * these controls at 31 - but loudness there is NOT monotonic: on this
+     * device some higher values are quieter than lower ones. Treat it as
+     * undefined territory, exposed behind an explicit opt-in rather than as
+     * the default scale.
+     */
+    const val MAX_GAIN = 18
+    const val MAX_GAIN_EXTENDED = 31
 
     data class Status(
         val installed: Boolean = false,
@@ -29,6 +39,10 @@ object StereoCtl {
         val actionCount: Int = 0,
         val moduleVersion: String = "",
         val supportsDoctor: Boolean = false,
+        val supportsReset: Boolean = false,
+        val guardBypassed: Boolean = false,
+        val interval: String = "2",
+        val logLevel: String = "info",
         val raw: String = ""
     )
 
@@ -52,6 +66,10 @@ object StereoCtl {
             actionCount = Regex("""\((\d+) configured\)""").find(raw)?.groupValues?.get(1)?.toIntOrNull() ?: 0,
             moduleVersion = readModuleVersion(),
             supportsDoctor = supportsCommand("doctor"),
+            supportsReset = supportsCommand("reset"),
+            guardBypassed = Shell.run("test -f $DATA_DIR/guard_bypass && echo yes").out.trim() == "yes",
+            interval = readSetting("WATCH_INTERVAL").ifBlank { "2" },
+            logLevel = readSetting("LOG_LEVEL").ifBlank { "info" },
             raw = raw
         )
     }
@@ -118,10 +136,50 @@ object StereoCtl {
         return Shell.run("sed -i 's/^MODE=.*/MODE=$m/' $CONF").out
     }
 
+    /**
+     * Why MODE=playback may never engage: the daemon looks for a RUNNING
+     * substream in procfs, and audio routed through the DSP offload path may
+     * never appear there. This dumps what it can actually see.
+     */
+    fun playbackProbe(): String = Shell.run(
+        "echo '--- pcm playback states ---'; " +
+        "grep -H state /proc/asound/card*/pcm*p/sub*/status 2>/dev/null; " +
+        "echo; echo '--- what the module concludes ---'; " +
+        "sh $CTL status | grep -i playback"
+    ).out
+
     /** Live mixer value, as opposed to what actions.conf says it should be. */
     fun liveGain(): String = Shell.run("sh $CTL ctl 'Handset Volume'").out
 
     fun readConf(): String = Shell.run("cat $CONF 2>/dev/null").out
+
+    // ---- the rest of the stereoctl surface -------------------------------
+
+    fun apply() = ctl("apply").out
+    fun revert() = ctl("revert").out
+    fun restart() = ctl("restart").out
+    fun dump() = ctl("dump").out
+    fun scan(pattern: String) =
+        if (pattern.isBlank()) ctl("scan").out else ctl("scan '$pattern'").out
+    fun diff(seconds: Int) = ctl("diff $seconds").out
+    fun guard(on: Boolean) = ctl(if (on) "guard on" else "guard off").out
+    fun guardStatus() = ctl("guard status").out
+    fun xmlPatch() = ctl("xml-patch").out
+    fun xmlRevert() = ctl("xml-revert").out
+    fun reset() = ctl("reset").out
+    fun help() = ctl("--help").out
+
+    fun ctlGet(name: String) = Shell.run("sh $CTL ctl '$name'").out
+    fun ctlSet(name: String, value: String) = Shell.run("sh $CTL ctl '$name' '$value'").out
+
+    /** Escape hatch: run any stereoctl subcommand the UI does not model. */
+    fun raw(args: String) = ctl(args).out
+
+    fun setSetting(key: String, value: String): String =
+        Shell.run("grep -q '^$key=' $CONF && sed -i 's|^$key=.*|$key=$value|' $CONF || echo '$key=$value' >> $CONF").out
+
+    fun readSetting(key: String): String =
+        Shell.run("grep -m1 '^$key=' $CONF 2>/dev/null | cut -d= -f2- | tr -d \"'\"").out.trim()
 
     fun readActions(): String = Shell.run("cat $ACTIONS 2>/dev/null").out
 }

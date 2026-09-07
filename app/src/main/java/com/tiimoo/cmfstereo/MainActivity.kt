@@ -14,7 +14,6 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -35,17 +34,20 @@ fun App() {
     var console by remember { mutableStateOf("") }
     var gain by remember { mutableStateOf(0f) }
     var gainReadable by remember { mutableStateOf(false) }
-    var soloOn by remember { mutableStateOf(false) }
+    var extendedRange by remember { mutableStateOf(false) }
+    var tab by remember { mutableStateOf(0) }
 
-    fun refresh() {
-        scope.launch {
-            busy = true
-            val s = withContext(Dispatchers.IO) { StereoCtl.status() }
-            status = s
-            gainReadable = s.gain != null
-            gain = (s.gain ?: 0).toFloat()
-            busy = false
-        }
+    fun sync(s: StereoCtl.Status) {
+        status = s
+        gainReadable = s.gain != null
+        gain = (s.gain ?: 0).toFloat()
+        if ((s.gain ?: 0) > StereoCtl.MAX_GAIN) extendedRange = true
+    }
+
+    fun refresh() = scope.launch {
+        busy = true
+        sync(withContext(Dispatchers.IO) { StereoCtl.status() })
+        busy = false
     }
 
     fun action(label: String, block: () -> String) {
@@ -53,10 +55,7 @@ fun App() {
             busy = true
             val out = withContext(Dispatchers.IO) { block() }
             console = if (out.isBlank()) "$label: done" else out
-            val s = withContext(Dispatchers.IO) { StereoCtl.status() }
-            status = s
-            gainReadable = s.gain != null
-            gain = (s.gain ?: 0).toFloat()
+            sync(withContext(Dispatchers.IO) { StereoCtl.status() })
             busy = false
         }
     }
@@ -67,178 +66,238 @@ fun App() {
         topBar = {
             TopAppBar(
                 title = { Text("CMF Stereo") },
-                actions = {
-                    TextButton(onClick = { refresh() }, enabled = !busy) { Text("Refresh") }
-                }
+                actions = { TextButton(onClick = { refresh() }, enabled = !busy) { Text("Refresh") } }
             )
         }
     ) { pad ->
-        Column(
-            Modifier
-                .padding(pad)
-                .padding(16.dp)
-                .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
-        ) {
+        Column(Modifier.padding(pad)) {
             if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
 
             when {
-                !status.rooted -> Problem(
-                    "No root access",
-                    "Grant this app superuser permission in Magisk, then Refresh."
-                )
-                !status.installed -> Problem(
-                    "Module not installed",
-                    "Flash cmf-fake-stereo in Magisk and reboot."
-                )
+                !status.rooted -> Padded { Problem("No root access", "Grant superuser permission, then Refresh.") }
+                !status.installed -> Padded { Problem("Module not installed", "Flash cmf-fake-stereo and reboot.") }
                 else -> {
-                    StatusCard(status)
+                    TabRow(selectedTabIndex = tab) {
+                        listOf("Control", "Advanced", "Tools").forEachIndexed { i, t ->
+                            Tab(selected = tab == i, onClick = { tab = i }, text = { Text(t) })
+                        }
+                    }
+                    Column(
+                        Modifier
+                            .weight(1f)
+                            .verticalScroll(rememberScrollState())
+                            .padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(16.dp)
+                    ) {
+                        when (tab) {
+                            0 -> ControlTab(status, busy, gain, gainReadable, extendedRange,
+                                onGain = { gain = it },
+                                onExtended = { extendedRange = it },
+                                action = ::action)
+                            1 -> AdvancedTab(status, busy, ::action)
+                            2 -> ToolsTab(status, busy, ::action)
+                        }
 
-                    Card {
-                        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                            Row(
-                                Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Column {
-                                    Text("Earpiece output", style = MaterialTheme.typography.titleMedium)
-                                    Text(
-                                        if (status.armed) "Armed" else "Disabled",
-                                        style = MaterialTheme.typography.bodySmall
-                                    )
-                                }
-                                Switch(
-                                    checked = status.armed,
-                                    enabled = !busy,
-                                    onCheckedChange = { on ->
-                                        action("power") { StereoCtl.setArmed(on) }
+                        if (console.isNotBlank()) {
+                            Card {
+                                Column(Modifier.padding(16.dp)) {
+                                    Row(
+                                        Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text("Output", style = MaterialTheme.typography.titleMedium)
+                                        TextButton(onClick = { console = "" }) { Text("Clear") }
                                     }
-                                )
-                            }
-
-                            HorizontalDivider()
-
-                            Text(
-                                if (gainReadable) "Earpiece gain: ${gain.toInt()} / ${StereoCtl.MAX_GAIN}"
-                                else "Earpiece gain: unavailable"
-                            )
-                            Slider(
-                                value = gain,
-                                onValueChange = { gain = it },
-                                onValueChangeFinished = {
-                                    action("gain") { StereoCtl.setGain(gain.toInt()) }
-                                },
-                                valueRange = 0f..StereoCtl.MAX_GAIN.toFloat(),
-                                steps = StereoCtl.MAX_GAIN - 1,
-                                // Disabled when the value could not be read. Writing a
-                                // displayed-but-unread 0 back is how this zeroed a working
-                                // config once; the slider stays inert rather than guess.
-                                enabled = !busy && gainReadable
-                            )
-                            if (!gainReadable) {
-                                Text(
-                                    "Could not read the gain from actions.conf, so the slider is " +
-                                        "disabled rather than risk writing a wrong value over it.",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.error
-                                )
-                            } else {
-                                Text(
-                                    "31 is the hardware ceiling - the register field is 5 bits, so " +
-                                        "higher values wrap and get quieter. The earpiece has no " +
-                                        "protection circuit; back off at the first buzz.",
-                                    style = MaterialTheme.typography.bodySmall
-                                )
-                            }
-
-                            HorizontalDivider()
-
-                            Text("Mode", style = MaterialTheme.typography.titleSmall)
-                            SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-                                listOf("playback" to "While playing", "always" to "Always on")
-                                    .forEachIndexed { i, (value, label) ->
-                                        SegmentedButton(
-                                            selected = status.mode == value,
-                                            onClick = { action("mode") { StereoCtl.setMode(value) } },
-                                            shape = SegmentedButtonDefaults.itemShape(i, 2),
-                                            enabled = !busy
-                                        ) { Text(label) }
-                                    }
-                            }
-                        }
-                    }
-
-                    Card {
-                        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Text("Tools", style = MaterialTheme.typography.titleMedium)
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                FilledTonalButton(
-                                    onClick = {
-                                        soloOn = !soloOn
-                                        action("solo") { StereoCtl.solo(soloOn) }
-                                    },
-                                    enabled = !busy
-                                ) { Text(if (soloOn) "Un-solo" else "Solo earpiece") }
-                                FilledTonalButton(
-                                    onClick = { action("doctor") { StereoCtl.doctor() } },
-                                    enabled = !busy && status.supportsDoctor
-                                ) { Text("Doctor") }
-                            }
-                            if (!status.supportsDoctor) {
-                                Text(
-                                    "Doctor needs module v0.7.1 or newer - this device has " +
-                                        "${status.moduleVersion.ifBlank { "an older build" }}.",
-                                    style = MaterialTheme.typography.bodySmall
-                                )
-                            }
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                OutlinedButton(
-                                    onClick = { action("live gain") { StereoCtl.liveGain() } },
-                                    enabled = !busy
-                                ) { Text("Live gain") }
-                                OutlinedButton(
-                                    onClick = { action("log") { StereoCtl.log() } },
-                                    enabled = !busy
-                                ) { Text("Log") }
-                                OutlinedButton(
-                                    onClick = { action("probe") { StereoCtl.probe() } },
-                                    enabled = !busy
-                                ) { Text("Probe") }
-                                OutlinedButton(
-                                    onClick = { action("report") { StereoCtl.report() } },
-                                    enabled = !busy
-                                ) { Text("Report") }
-                            }
-                        }
-                    }
-
-                    if (console.isNotBlank()) {
-                        Card {
-                            Column(Modifier.padding(16.dp)) {
-                                Row(
-                                    Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Text("Output", style = MaterialTheme.typography.titleMedium)
-                                    TextButton(onClick = { console = "" }) { Text("Clear") }
+                                    Text(console, fontFamily = FontFamily.Monospace, fontSize = 11.sp, lineHeight = 15.sp)
                                 }
-                                Text(
-                                    console,
-                                    fontFamily = FontFamily.Monospace,
-                                    fontSize = 11.sp,
-                                    lineHeight = 15.sp
-                                )
                             }
                         }
                     }
+                }
+            }
+        }
+    }
+}
 
-                    Text(
-                        "Both drivers play the same content. This is not left/right stereo - " +
-                            "the hardware cannot do that.",
-                        style = MaterialTheme.typography.bodySmall
-                    )
+@Composable private fun Padded(content: @Composable () -> Unit) =
+    Column(Modifier.padding(16.dp)) { content() }
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ControlTab(
+    s: StereoCtl.Status,
+    busy: Boolean,
+    gain: Float,
+    gainReadable: Boolean,
+    extended: Boolean,
+    onGain: (Float) -> Unit,
+    onExtended: (Boolean) -> Unit,
+    action: (String, () -> String) -> Unit
+) {
+    val max = if (extended) StereoCtl.MAX_GAIN_EXTENDED else StereoCtl.MAX_GAIN
+
+    Card {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text("Status", style = MaterialTheme.typography.titleMedium)
+            StatusRow("Armed", if (s.armed) "yes" else "no", s.armed)
+            StatusRow("Daemon", if (s.daemonRunning) "running" else "stopped", s.daemonRunning)
+            StatusRow("Playback", if (s.playing) "active" else "idle", true)
+            StatusRow("Mode", s.mode, true)
+            StatusRow("Routing", "${s.actionCount} actions", s.actionCount > 0)
+            StatusRow("Gain", s.gain?.toString() ?: "unreadable", s.gain != null)
+            StatusRow("Guard", if (s.guardBypassed) "bypassed" else "active", true)
+            if (s.moduleVersion.isNotBlank()) StatusRow("Module", s.moduleVersion, true)
+            StatusRow("App", BuildConfig.VERSION_NAME, true)
+        }
+    }
+
+    Card {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Column {
+                    Text("Earpiece output", style = MaterialTheme.typography.titleMedium)
+                    Text(if (s.armed) "Armed" else "Disabled", style = MaterialTheme.typography.bodySmall)
+                }
+                Switch(checked = s.armed, enabled = !busy,
+                    onCheckedChange = { on -> action("power") { StereoCtl.setArmed(on) } })
+            }
+
+            HorizontalDivider()
+
+            Text(if (gainReadable) "Earpiece gain: ${gain.toInt()} / $max" else "Earpiece gain: unavailable")
+            Slider(
+                value = gain.coerceAtMost(max.toFloat()),
+                onValueChange = onGain,
+                onValueChangeFinished = { action("gain") { StereoCtl.setGain(gain.toInt()) } },
+                valueRange = 0f..max.toFloat(),
+                steps = max - 1,
+                enabled = !busy && gainReadable
+            )
+            Text(
+                "The driver declares 0-18, and that is where loudness rises " +
+                    "predictably. Higher values still write, but the mapping is not " +
+                    "monotonic there - some larger numbers are quieter than smaller ones.",
+                style = MaterialTheme.typography.bodySmall
+            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Checkbox(checked = extended, onCheckedChange = onExtended, enabled = !busy)
+                Text("Allow 19-31 (undefined, non-monotonic)", style = MaterialTheme.typography.bodySmall)
+            }
+            Text(
+                "The earpiece has no protection circuit. Back off at the first buzz.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error
+            )
+
+            HorizontalDivider()
+
+            Text("Mode", style = MaterialTheme.typography.titleSmall)
+            SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                listOf("playback" to "While playing", "always" to "Always on").forEachIndexed { i, (v, l) ->
+                    SegmentedButton(
+                        selected = s.mode == v,
+                        onClick = { action("mode") { StereoCtl.setMode(v) } },
+                        shape = SegmentedButtonDefaults.itemShape(i, 2),
+                        enabled = !busy
+                    ) { Text(l) }
+                }
+            }
+            if (s.mode == "playback" && !s.playing) {
+                Text(
+                    "Nothing is applied in this mode until audio is playing. If the " +
+                        "earpiece never engages while music plays, the module cannot " +
+                        "see your playback - use Always on, and send me the output of " +
+                        "Tools > Playback probe.",
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun AdvancedTab(s: StereoCtl.Status, busy: Boolean, action: (String, () -> String) -> Unit) {
+    var interval by remember(s.interval) { mutableStateOf(s.interval) }
+
+    Card {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text("Daemon", style = MaterialTheme.typography.titleMedium)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilledTonalButton(onClick = { action("apply") { StereoCtl.apply() } }, enabled = !busy) { Text("Apply") }
+                FilledTonalButton(onClick = { action("revert") { StereoCtl.revert() } }, enabled = !busy) { Text("Revert") }
+                FilledTonalButton(onClick = { action("restart") { StereoCtl.restart() } }, enabled = !busy) { Text("Restart") }
+            }
+
+            HorizontalDivider()
+
+            Text("Poll interval (seconds)", style = MaterialTheme.typography.titleSmall)
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = interval,
+                    onValueChange = { interval = it.filter { c -> c.isDigit() } },
+                    modifier = Modifier.width(110.dp),
+                    singleLine = true,
+                    enabled = !busy
+                )
+                Button(
+                    onClick = { action("interval") { StereoCtl.setSetting("WATCH_INTERVAL", interval) } },
+                    enabled = !busy && interval.isNotBlank()
+                ) { Text("Set") }
+            }
+            Text(
+                "How often the routing is re-asserted. The HAL resets mixer controls " +
+                    "on every route change, so this cannot be very large.",
+                style = MaterialTheme.typography.bodySmall
+            )
+
+            HorizontalDivider()
+
+            Text("Guard", style = MaterialTheme.typography.titleSmall)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Text(if (s.guardBypassed) "Bypassed" else "Active")
+                Switch(
+                    checked = !s.guardBypassed,
+                    enabled = !busy,
+                    onCheckedChange = { on -> action("guard") { StereoCtl.guard(on) } }
+                )
+            }
+            Text(
+                "When active, the earpiece follows the speaker amp and stays quiet " +
+                    "under headphones or Bluetooth.",
+                style = MaterialTheme.typography.bodySmall
+            )
+
+            HorizontalDivider()
+
+            Text("Log level", style = MaterialTheme.typography.titleSmall)
+            SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                listOf("debug", "info", "warn").forEachIndexed { i, lvl ->
+                    SegmentedButton(
+                        selected = s.logLevel == lvl,
+                        onClick = { action("log level") { StereoCtl.setSetting("LOG_LEVEL", lvl) } },
+                        shape = SegmentedButtonDefaults.itemShape(i, 3),
+                        enabled = !busy
+                    ) { Text(lvl) }
+                }
+            }
+        }
+    }
+
+    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Danger zone", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "The audio policy overlay must NOT be used on the CMF Phone 1: the mono " +
+                    "speaker port is what makes the framework sum L+R, and widening it " +
+                    "would drop the right channel entirely. Needs a reboot either way.",
+                style = MaterialTheme.typography.bodySmall
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = { action("xml-patch") { StereoCtl.xmlPatch() } }, enabled = !busy) { Text("XML patch") }
+                OutlinedButton(onClick = { action("xml-revert") { StereoCtl.xmlRevert() } }, enabled = !busy) { Text("XML revert") }
+                if (s.supportsReset) {
+                    OutlinedButton(onClick = { action("reset") { StereoCtl.reset() } }, enabled = !busy) { Text("Reset state") }
                 }
             }
         }
@@ -246,19 +305,105 @@ fun App() {
 }
 
 @Composable
-private fun StatusCard(s: StereoCtl.Status) {
+private fun ToolsTab(s: StereoCtl.Status, busy: Boolean, action: (String, () -> String) -> Unit) {
+    var ctlName by remember { mutableStateOf("Handset Volume") }
+    var ctlValue by remember { mutableStateOf("") }
+    var scanPattern by remember { mutableStateOf("rcv|handset|spk") }
+    var rawArgs by remember { mutableStateOf("") }
+    var diffSeconds by remember { mutableStateOf("20") }
+
     Card {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text("Status", style = MaterialTheme.typography.titleMedium)
-            StatusRow("Module", if (s.installed) "installed" else "missing", s.installed)
-            StatusRow("Armed", if (s.armed) "yes" else "no", s.armed)
-            StatusRow("Daemon", if (s.daemonRunning) "running" else "stopped", s.daemonRunning)
-            StatusRow("Playback", if (s.playing) "active" else "idle", true)
-            StatusRow("Routing", "${s.actionCount} actions", s.actionCount > 0)
-            StatusRow("App", BuildConfig.VERSION_NAME, true)
-            StatusRow("Gain", s.gain?.let { "$it / ${StereoCtl.MAX_GAIN}" } ?: "unreadable", s.gain != null)
-            if (s.moduleVersion.isNotBlank()) {
-                StatusRow("Version", s.moduleVersion, true)
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Diagnostics", style = MaterialTheme.typography.titleMedium)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilledTonalButton(onClick = { action("solo") { StereoCtl.solo(true) } }, enabled = !busy) { Text("Solo") }
+                FilledTonalButton(onClick = { action("unsolo") { StereoCtl.solo(false) } }, enabled = !busy) { Text("Un-solo") }
+                FilledTonalButton(
+                    onClick = { action("doctor") { StereoCtl.doctor() } },
+                    enabled = !busy && s.supportsDoctor
+                ) { Text("Doctor") }
+            }
+            if (!s.supportsDoctor) {
+                Text("Doctor needs module v0.7.1+.", style = MaterialTheme.typography.bodySmall)
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = { action("log") { StereoCtl.log() } }, enabled = !busy) { Text("Log") }
+                OutlinedButton(onClick = { action("live gain") { StereoCtl.liveGain() } }, enabled = !busy) { Text("Live gain") }
+                OutlinedButton(onClick = { action("help") { StereoCtl.help() } }, enabled = !busy) { Text("Help") }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = { action("probe") { StereoCtl.probe() } }, enabled = !busy) { Text("Probe") }
+                OutlinedButton(onClick = { action("report") { StereoCtl.report() } }, enabled = !busy) { Text("Report") }
+                OutlinedButton(
+                    onClick = { action("playback probe") { StereoCtl.playbackProbe() } },
+                    enabled = !busy
+                ) { Text("Playback probe") }
+            }
+        }
+    }
+
+    Card {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Mixer control", style = MaterialTheme.typography.titleMedium)
+            OutlinedTextField(ctlName, { ctlName = it }, label = { Text("Control name") },
+                singleLine = true, modifier = Modifier.fillMaxWidth(), enabled = !busy)
+            OutlinedTextField(ctlValue, { ctlValue = it }, label = { Text("Value (blank to read)") },
+                singleLine = true, modifier = Modifier.fillMaxWidth(), enabled = !busy)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    onClick = {
+                        action("ctl") {
+                            if (ctlValue.isBlank()) StereoCtl.ctlGet(ctlName)
+                            else StereoCtl.ctlSet(ctlName, ctlValue)
+                        }
+                    },
+                    enabled = !busy && ctlName.isNotBlank()
+                ) { Text(if (ctlValue.isBlank()) "Read" else "Write") }
+                OutlinedButton(onClick = { action("dump") { StereoCtl.dump() } }, enabled = !busy) { Text("Dump all") }
+            }
+
+            HorizontalDivider()
+
+            OutlinedTextField(scanPattern, { scanPattern = it }, label = { Text("Scan pattern") },
+                singleLine = true, modifier = Modifier.fillMaxWidth(), enabled = !busy)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = { action("scan") { StereoCtl.scan(scanPattern) } }, enabled = !busy) { Text("Scan") }
+                OutlinedTextField(diffSeconds, { diffSeconds = it.filter { c -> c.isDigit() } },
+                    label = { Text("Diff s") }, singleLine = true, modifier = Modifier.width(100.dp), enabled = !busy)
+                Button(
+                    onClick = { action("diff") { StereoCtl.diff(diffSeconds.toIntOrNull() ?: 20) } },
+                    enabled = !busy
+                ) { Text("Diff") }
+            }
+            Text(
+                "Diff snapshots the mixer, waits, then shows what changed - start or " +
+                    "stop playback during the wait to find which controls carry media.",
+                style = MaterialTheme.typography.bodySmall
+            )
+        }
+    }
+
+    Card {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Run any stereoctl command", style = MaterialTheme.typography.titleMedium)
+            OutlinedTextField(rawArgs, { rawArgs = it }, label = { Text("arguments") },
+                singleLine = true, modifier = Modifier.fillMaxWidth(), enabled = !busy)
+            Button(onClick = { action("stereoctl $rawArgs") { StereoCtl.raw(rawArgs) } },
+                enabled = !busy && rawArgs.isNotBlank()) { Text("Run") }
+            Text(
+                "Anything the buttons above do not cover. The module stays the source " +
+                    "of truth, so nothing here is unavailable in the app.",
+                style = MaterialTheme.typography.bodySmall
+            )
+        }
+    }
+
+    Card {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Config files", style = MaterialTheme.typography.titleMedium)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = { action("stereo.conf") { StereoCtl.readConf() } }, enabled = !busy) { Text("stereo.conf") }
+                OutlinedButton(onClick = { action("actions.conf") { StereoCtl.readActions() } }, enabled = !busy) { Text("actions.conf") }
             }
         }
     }
