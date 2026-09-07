@@ -65,25 +65,38 @@ fun App() {
         }
     }
 
-    // Steps the gain across its whole range, holding each value long enough to
-    // judge by ear. The mapping is not monotonic on this hardware, so the only
-    // way to find the loudest setting is to listen to every one of them.
+    // Steps the gain across its range, holding each value long enough to judge
+    // by ear. The mapping is not monotonic on this hardware, so listening to
+    // every value is the only way to find the loudest.
+    //
+    // Each step writes actions.conf as well as the mixer. Writing only the
+    // mixer does not work: the daemon re-asserts the configured gain every
+    // WATCH_INTERVAL seconds, so every swept value snapped back to the
+    // configured one within about two seconds and the sweep measured nothing
+    // but the config. The starting value is restored at the end.
     fun sweep(from: Int, to: Int, dwellMs: Long) {
         scope.launch {
             sweeping = true
-            val heard = StringBuilder("gain sweep $from..$to, ${dwellMs / 1000}s each\n")
+            val original = status.gain
+            val heard = StringBuilder(
+                "gain sweep $from..$to, ${dwellMs / 1000}s each\n" +
+                    "(writing config + mixer so the daemon does not overwrite each step)\n"
+            )
             for (v in from..to) {
                 if (!sweeping) break
                 sweepAt = v
-                withContext(Dispatchers.IO) { StereoCtl.ctlSet("Handset Volume", v.toString()) }
+                withContext(Dispatchers.IO) { StereoCtl.setGain(v, allowExtended = true) }
                 heard.append("  $v\n")
                 kotlinx.coroutines.delay(dwellMs)
             }
             sweepAt = -1
             sweeping = false
+            if (original != null) {
+                withContext(Dispatchers.IO) { StereoCtl.setGain(original, allowExtended = true) }
+                heard.append("\nrestored $original\n")
+            }
             console = heard.toString() +
-                "\nSweep done. Set the value you liked on the Speaker tab - " +
-                "the sweep only wrote the mixer, not the config."
+                "\nSweep done. Set whichever value sounded best on the Speaker tab."
             sync(withContext(Dispatchers.IO) { StereoCtl.status() })
         }
     }
@@ -434,8 +447,10 @@ private fun ToolsTab(
                 ) { Text("Start sweep") }
             }
             Text(
-                "The sweep writes the mixer only, not the config - set whatever you " +
-                    "settle on from the Speaker tab so it survives a reboot.",
+                "Each step writes the config as well as the mixer, otherwise the " +
+                    "daemon re-asserts the configured gain within a couple of seconds " +
+                    "and every step snaps back. Your starting value is restored at " +
+                    "the end.",
                 style = MaterialTheme.typography.bodySmall
             )
         }
