@@ -35,7 +35,6 @@ fun App() {
     var console by remember { mutableStateOf("") }
     var gain by remember { mutableStateOf(0f) }
     var gainReadable by remember { mutableStateOf(false) }
-    var extendedRange by remember { mutableStateOf(false) }
     var tab by remember { mutableStateOf(0) }
     var sweeping by remember { mutableStateOf(false) }
     var sweepAt by remember { mutableStateOf(-1) }
@@ -44,7 +43,6 @@ fun App() {
         status = s
         gainReadable = s.gain != null
         gain = (s.gain ?: 0).toFloat()
-        if ((s.gain ?: 0) > StereoCtl.MAX_GAIN) extendedRange = true
     }
 
     fun refresh() = scope.launch {
@@ -85,14 +83,14 @@ fun App() {
             for (v in from..to) {
                 if (!sweeping) break
                 sweepAt = v
-                withContext(Dispatchers.IO) { StereoCtl.setGain(v, allowExtended = true) }
+                withContext(Dispatchers.IO) { StereoCtl.setGain(v) }
                 heard.append("  $v\n")
                 kotlinx.coroutines.delay(dwellMs)
             }
             sweepAt = -1
             sweeping = false
             if (original != null) {
-                withContext(Dispatchers.IO) { StereoCtl.setGain(original, allowExtended = true) }
+                withContext(Dispatchers.IO) { StereoCtl.setGain(original) }
                 heard.append("\nrestored $original\n")
             }
             console = heard.toString() +
@@ -149,9 +147,8 @@ fun App() {
                         verticalArrangement = Arrangement.spacedBy(16.dp)
                     ) {
                         when (tab) {
-                            0 -> ControlTab(status, busy, gain, gainReadable, extendedRange,
+                            0 -> ControlTab(status, busy, gain, gainReadable,
                                 onGain = { gain = it },
-                                onExtended = { extendedRange = it },
                                 // Committing here rather than inside ControlTab
                                 // matters: `gain` there is a parameter, captured
                                 // when the lambda was composed, and Slider holds
@@ -160,7 +157,7 @@ fun App() {
                                 // through the state delegate instead, which is
                                 // live at invocation.
                                 onGainCommit = {
-                                    action("gain") { StereoCtl.setGain(gain.toInt(), extendedRange) }
+                                    action("gain") { StereoCtl.setGain(gain.toInt()) }
                                 },
                                 action = ::action)
                             1 -> AdvancedTab(status, busy, ::action)
@@ -201,13 +198,11 @@ private fun ControlTab(
     busy: Boolean,
     gain: Float,
     gainReadable: Boolean,
-    extended: Boolean,
     onGain: (Float) -> Unit,
-    onExtended: (Boolean) -> Unit,
     onGainCommit: () -> Unit,
     action: (String, () -> String) -> Unit
 ) {
-    val max = if (extended) StereoCtl.MAX_GAIN_EXTENDED else StereoCtl.MAX_GAIN
+    val max = StereoCtl.MAX_GAIN
 
     Card {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -234,33 +229,6 @@ private fun ControlTab(
                 Switch(checked = s.armed, enabled = !busy,
                     onCheckedChange = { on -> action("power") { StereoCtl.setArmed(on) } })
             }
-
-            HorizontalDivider()
-
-            Text(if (gainReadable) "Earpiece gain: ${gain.toInt()} / $max" else "Earpiece gain: unavailable")
-            Slider(
-                value = gain.coerceAtMost(max.toFloat()),
-                onValueChange = onGain,
-                onValueChangeFinished = onGainCommit,
-                valueRange = 0f..max.toFloat(),
-                steps = max - 1,
-                enabled = !busy && gainReadable
-            )
-            Text(
-                "The driver declares 0-18, and that is where loudness rises " +
-                    "predictably. Higher values still write, but the mapping is not " +
-                    "monotonic there - some larger numbers are quieter than smaller ones.",
-                style = MaterialTheme.typography.bodySmall
-            )
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Checkbox(checked = extended, onCheckedChange = onExtended, enabled = !busy)
-                Text("Allow 19-31 (undefined, non-monotonic)", style = MaterialTheme.typography.bodySmall)
-            }
-            Text(
-                "The earpiece has no protection circuit. Back off at the first buzz.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.error
-            )
 
             HorizontalDivider()
 
@@ -291,6 +259,38 @@ private fun ControlTab(
                     "Doctor explains why it is silent, if it ever is.",
                 style = MaterialTheme.typography.bodySmall
             )
+
+            HorizontalDivider()
+
+            Text("Earpiece gain", style = MaterialTheme.typography.titleSmall)
+            Text(
+                if (gainReadable) "${gain.toInt()} of $max" else "unavailable",
+                style = MaterialTheme.typography.bodyMedium
+            )
+            Slider(
+                value = gain.coerceAtMost(max.toFloat()),
+                onValueChange = onGain,
+                onValueChangeFinished = onGainCommit,
+                valueRange = 0f..max.toFloat(),
+                steps = max - 1,
+                enabled = !busy && gainReadable
+            )
+            Text(
+                "This has little audible effect here. Loudness is set by " +
+                    "ADDA_DL_GAIN, which the HAL already keeps near maximum " +
+                    "during playback, so the earpiece is as loud as this path " +
+                    "allows regardless of where this sits. Left in because it is " +
+                    "the receiver's own gain and lowering it does work.",
+                style = MaterialTheme.typography.bodySmall
+            )
+            if (!gainReadable) {
+                Text(
+                    "Could not read the gain from actions.conf, so the slider is " +
+                        "disabled rather than risk writing a wrong value over it.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
 
             if (s.mode == "playback" && !s.playing) {
                 Text(
@@ -448,7 +448,7 @@ private fun ToolsTab(
                     onClick = {
                         onSweep(
                             sweepFrom.toIntOrNull() ?: 0,
-                            (sweepTo.toIntOrNull() ?: 31).coerceAtMost(StereoCtl.MAX_GAIN_EXTENDED),
+                            (sweepTo.toIntOrNull() ?: 31).coerceAtMost(StereoCtl.MAX_GAIN),
                             ((dwell.toLongOrNull() ?: 4L) * 1000)
                         )
                     },

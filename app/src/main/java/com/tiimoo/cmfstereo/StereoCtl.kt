@@ -15,17 +15,17 @@ object StereoCtl {
     private const val CONF = "$DATA_DIR/stereo.conf"
 
     /**
-     * The driver declares "range 0->18" for Handset Volume. That is the range
-     * where the mapping is defined and monotonic.
+     * Full range of the Handset Volume field: 5 bits, so 31 is the top (40
+     * wraps to 8, measured).
      *
-     * 19..31 still write - the field is 5 bits and the vendor HAL itself parks
-     * these controls at 31 - but loudness there is NOT monotonic: on this
-     * device some higher values are quieter than lower ones. Treat it as
-     * undefined territory, exposed behind an explicit opt-in rather than as
-     * the default scale.
+     * Note this control has little audible effect on this device. Loudness is
+     * set by ADDA_DL_GAIN, which the HAL already parks at ~63311 of 65535
+     * during playback - about 0.3 dB from maximum. An earlier version of this
+     * app treated Handset Volume as the loudness control and warned at length
+     * about a "non-monotonic scale"; that was a misreading of a response
+     * that is close to flat.
      */
-    const val MAX_GAIN = 18
-    const val MAX_GAIN_EXTENDED = 31
+    const val MAX_GAIN = 31
 
     data class Status(
         val installed: Boolean = false,
@@ -120,13 +120,8 @@ object StereoCtl {
      * be running. The slider then looks broken: the file changes, the loudness
      * does not.
      */
-    /**
-     * @param allowExtended permit 19..31. Clamping to MAX_GAIN unconditionally
-     *   made the extended slider a lie: it moved to 31 and wrote 18.
-     */
-    fun setGain(value: Int, allowExtended: Boolean = true): String {
-        val ceiling = if (allowExtended) MAX_GAIN_EXTENDED else MAX_GAIN
-        val v = value.coerceIn(0, ceiling)
+    fun setGain(value: Int): String {
+        val v = value.coerceIn(0, MAX_GAIN)
         // '#' as the sed delimiter: the pattern itself contains '|'.
         Shell.run("sed -i 's#^ctl|Handset Volume|.*#ctl|Handset Volume|$v#' $ACTIONS")
 
