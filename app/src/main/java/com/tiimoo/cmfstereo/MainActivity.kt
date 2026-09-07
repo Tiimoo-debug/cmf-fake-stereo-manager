@@ -152,6 +152,16 @@ fun App() {
                             0 -> ControlTab(status, busy, gain, gainReadable, extendedRange,
                                 onGain = { gain = it },
                                 onExtended = { extendedRange = it },
+                                // Committing here rather than inside ControlTab
+                                // matters: `gain` there is a parameter, captured
+                                // when the lambda was composed, and Slider holds
+                                // that lambda for the whole gesture - so it
+                                // committed the value from before the drag. Read
+                                // through the state delegate instead, which is
+                                // live at invocation.
+                                onGainCommit = {
+                                    action("gain") { StereoCtl.setGain(gain.toInt(), extendedRange) }
+                                },
                                 action = ::action)
                             1 -> AdvancedTab(status, busy, ::action)
                             2 -> ToolsTab(status, busy, ::action, sweeping, sweepAt,
@@ -194,6 +204,7 @@ private fun ControlTab(
     extended: Boolean,
     onGain: (Float) -> Unit,
     onExtended: (Boolean) -> Unit,
+    onGainCommit: () -> Unit,
     action: (String, () -> String) -> Unit
 ) {
     val max = if (extended) StereoCtl.MAX_GAIN_EXTENDED else StereoCtl.MAX_GAIN
@@ -230,9 +241,7 @@ private fun ControlTab(
             Slider(
                 value = gain.coerceAtMost(max.toFloat()),
                 onValueChange = onGain,
-                onValueChangeFinished = {
-                    action("gain") { StereoCtl.setGain(gain.toInt(), extended) }
-                },
+                onValueChangeFinished = onGainCommit,
                 valueRange = 0f..max.toFloat(),
                 steps = max - 1,
                 enabled = !busy && gainReadable
