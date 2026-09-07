@@ -40,29 +40,6 @@ fun App() {
     var sweeping by remember { mutableStateOf(false) }
     var sweepAt by remember { mutableStateOf(-1) }
 
-    // Steps the gain across its whole range, holding each value long enough to
-    // judge by ear. The mapping is not monotonic on this hardware, so the only
-    // way to find the loudest setting is to listen to every one of them.
-    fun sweep(from: Int, to: Int, dwellMs: Long) {
-        scope.launch {
-            sweeping = true
-            val heard = StringBuilder("gain sweep $from..$to, ${dwellMs / 1000}s each\n")
-            for (v in from..to) {
-                if (!sweeping) break
-                sweepAt = v
-                withContext(Dispatchers.IO) { StereoCtl.ctlSet("Handset Volume", v.toString()) }
-                heard.append("  $v\n")
-                kotlinx.coroutines.delay(dwellMs)
-            }
-            sweepAt = -1
-            sweeping = false
-            console = heard.toString() +
-                "\nSweep done. Set the value you liked on the Speaker tab - " +
-                "the sweep only wrote the mixer, not the config."
-            sync(withContext(Dispatchers.IO) { StereoCtl.status() })
-        }
-    }
-
     fun sync(s: StereoCtl.Status) {
         status = s
         gainReadable = s.gain != null
@@ -85,6 +62,29 @@ fun App() {
             console = if (out.isBlank()) "$label: done" else out
             sync(withContext(Dispatchers.IO) { StereoCtl.status() })
             busy = false
+        }
+    }
+
+    // Steps the gain across its whole range, holding each value long enough to
+    // judge by ear. The mapping is not monotonic on this hardware, so the only
+    // way to find the loudest setting is to listen to every one of them.
+    fun sweep(from: Int, to: Int, dwellMs: Long) {
+        scope.launch {
+            sweeping = true
+            val heard = StringBuilder("gain sweep $from..$to, ${dwellMs / 1000}s each\n")
+            for (v in from..to) {
+                if (!sweeping) break
+                sweepAt = v
+                withContext(Dispatchers.IO) { StereoCtl.ctlSet("Handset Volume", v.toString()) }
+                heard.append("  $v\n")
+                kotlinx.coroutines.delay(dwellMs)
+            }
+            sweepAt = -1
+            sweeping = false
+            console = heard.toString() +
+                "\nSweep done. Set the value you liked on the Speaker tab - " +
+                "the sweep only wrote the mixer, not the config."
+            sync(withContext(Dispatchers.IO) { StereoCtl.status() })
         }
     }
 
